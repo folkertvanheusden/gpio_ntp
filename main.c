@@ -87,39 +87,60 @@ struct shmTime * get_shm_pointer(const int unitNr)
 	return pst;
 }
 
-inline void notify_ntp(struct shmTime *const pst, const int fudge_s, const int fudge_ns, struct timespec *const ts, long int *wrap)
+void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct timespec *const ts, long int *wrap, const int rebase)
 {
 	pst -> valid = 0;
 
-	/* apply fudge */
-	ts -> tv_sec += fudge_s;
-	ts -> tv_nsec += fudge_ns;
+	static int rebase_count = 0;
 
-	if (ts -> tv_nsec > BILLION - 1)
+	if (rebase > rebase_count)
 	{
-		ts -> tv_nsec -= BILLION;
-		ts -> tv_sec++;
+		static long int rebase_total = 0.0;
+
+		rebase_total += ts -> tv_nsec;
+
+		if (++rebase_count == rebase)
+		{
+			rebase_total /= rebase_count;
+
+			printf("rebasing to %ldns\n", rebase_total);
+
+			*fudge_s = -(rebase_total / BILLION);
+			*fudge_ns = -(rebase_total % BILLION);
+		}
 	}
-
-	/* if local time is more than 0.5 seconds off, assume
-	 * it is the next second
-	 */
-	pst -> receiveTimeStampSec = ts -> tv_sec;
-	pst -> receiveTimeStampUSec = ts -> tv_nsec / 1000;
-
-	if (ts -> tv_nsec >= BILLION / 2)
+	else
 	{
-		ts -> tv_sec++;
-		(*wrap)++;
+		/* apply fudge */
+		ts -> tv_sec += *fudge_s;
+		ts -> tv_nsec += *fudge_ns;
+
+		if (ts -> tv_nsec > BILLION - 1)
+		{
+			ts -> tv_nsec -= BILLION;
+			ts -> tv_sec++;
+		}
+
+		/* if local time is more than 0.5 seconds off, assume
+		 * it is the next second
+		 */
+		pst -> receiveTimeStampSec = ts -> tv_sec;
+		pst -> receiveTimeStampUSec = ts -> tv_nsec / 1000;
+
+		if (ts -> tv_nsec >= BILLION / 2)
+		{
+			ts -> tv_sec++;
+			(*wrap)++;
+		}
+
+		pst -> clockTimeStampSec = ts -> tv_sec;
+		pst -> clockTimeStampUSec = 0;
+
+		pst -> leap = pst -> mode = pst -> count = /* */
+		pst -> precision = 0;	/* 0 = precision of 1 sec., -1 = 0.5s */
+
+		pst -> valid = 1;
 	}
-
-	pst -> clockTimeStampSec = ts -> tv_sec;
-	pst -> clockTimeStampUSec = 0;
-
-	pst -> leap = pst -> mode = pst -> count = /* */
-	pst -> precision = 0;	/* 0 = precision of 1 sec., -1 = 0.5s */
-
-	pst -> valid = 1;
 }
 
 void set_nice(void)
@@ -138,7 +159,7 @@ void set_prio(void)
 		error_exit("sched_setscheduler() failed");
 }
 
-inline int get_value(const int fd)
+int get_value(const int fd)
 {
 	static char c[32];
 
@@ -151,7 +172,7 @@ inline int get_value(const int fd)
 	return c[0];
 }
 
-inline void wait_for_state(const int fd, const int what)
+void wait_for_state(const int fd, const int what)
 {
 	int value = 0;
 
@@ -215,7 +236,7 @@ void pulse_pin(const int pin, int *const memory)
 	}
 }
 
-void polling_driven(struct shmTime *const pst, const int fudge_s, const int fudge_ns, const int gpio_pps_in_fd, const int gpio_pps_out_pin, const double idle_factor)
+void polling_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, const int gpio_pps_in_fd, const int gpio_pps_out_pin, const double idle_factor, int rebase)
 {
 	long int wrap_count = 0;
 	struct timespec ts = { 0, 0 };
@@ -230,13 +251,15 @@ void polling_driven(struct shmTime *const pst, const int fudge_s, const int fudg
 		if (unlikely(clock_gettime(CLOCK_REALTIME, &ts) == -1))
 			error_exit("clock_gettime(CLOCK_REALTIME) failed");
 
+		pulse_pin(gpio_pps_out_pin, &pulse_out_value);
+
 		// register offset at ntp
 		if (unlikely(first))
 			first = 0;
 		else
-			notify_ntp(pst, fudge_s, fudge_ns, &ts, &wrap_count);
-
-		pulse_pin(gpio_pps_out_pin, &pulse_out_value);
+		{
+			notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase);
+		}
 
 		debug_log(&ts, wrap_count);
 
@@ -244,7 +267,7 @@ void polling_driven(struct shmTime *const pst, const int fudge_s, const int fudg
 	}
 }
 
-void interrupt_driven(struct shmTime *const pst, const int fudge_s, const int fudge_ns, const char edge_both, const int gpio_pps_in_fd, const int gpio_pps_out_pin)
+void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, const char edge_both, const int gpio_pps_in_fd, const int gpio_pps_out_pin, const int rebase)
 {
 	struct timespec ts = { 0, 0 };
 	char dummy = 0;
@@ -282,7 +305,7 @@ void interrupt_driven(struct shmTime *const pst, const int fudge_s, const int fu
 					continue;
 			}
 
-			notify_ntp(pst, fudge_s, fudge_ns, &ts, &wrap_count);
+			notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase);
 
 			pulse_pin(gpio_pps_out_pin, &gpio_pps_out_pin_value);
 
@@ -311,6 +334,7 @@ void help(void)
 	fprintf(stderr, "-b      handle both on rising/falling but ignore falling\n");
 	fprintf(stderr, "-P      use polling - for when the device does not support interrupts on gpio state changes\n");
 	fprintf(stderr, "-i x    polling: how long shall we sleep (part of a second) and not poll for interrupts. e.g. 0.95\n");
+	fprintf(stderr, "-R x    re-base: measure 'x' times the offset, then take the average and then use that as an offset. this can be useful when using e.g. a tcxo or an other non-synced pulse-source\n");
 }
 
 int main(int argc, char *argv[])
@@ -325,13 +349,18 @@ int main(int argc, char *argv[])
 	int c = -1;
 	char edge_both = 0, polling = 0;
 	double idle_factor = 0.95;
+	int rebase = -1;
 
 	printf("rpi_gpio_ntp v" VERSION ", (C) 2013-2015 by folkert@vanheusden.com\n\n");
 
-	while((c = getopt(argc, argv, "G:i:bp:fN:g:F:dPh")) != -1)
+	while((c = getopt(argc, argv, "R:G:i:bp:fN:g:F:dPh")) != -1)
 	{
 		switch(c)
 		{
+			case 'R':
+				rebase = atoi(optarg);
+				break;
+
 			case 'G':
 				gpio_pps_in_pin_path = optarg;
 				break;
@@ -468,9 +497,9 @@ int main(int argc, char *argv[])
 		error_exit("daemon() failed");
 
 	if (polling)
-		polling_driven(pst, fudge_s, fudge_ns, gpio_pps_in_fd, gpio_pps_out_pin, idle_factor);
+		polling_driven(pst, fudge_s, fudge_ns, gpio_pps_in_fd, gpio_pps_out_pin, idle_factor, rebase);
 	else
-		interrupt_driven(pst, fudge_s, fudge_ns, edge_both, gpio_pps_in_fd, gpio_pps_out_pin);
+		interrupt_driven(pst, fudge_s, fudge_ns, edge_both, gpio_pps_in_fd, gpio_pps_out_pin, rebase);
 
 	return 0;
 }

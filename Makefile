@@ -2,7 +2,7 @@ VERSION=1.5
 
 DEBUG= -g
 CFLAGS+=-DVERSION=\"${VERSION}\" $(DEBUG) -muclibc
-LDFLAGS+=$(DEBUG) -lm -lrt -muclibc -static
+LDFLAGS+=$(DEBUG) -lm -lrt #-muclibc -static
 
 OBJS=error.o gpio-int-test.o main.o
 
