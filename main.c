@@ -220,7 +220,7 @@ void debug_log(const struct timespec *const ts, const long int wrap_count)
 		avg_avg += offset;
 		total_count++;
 
-		printf("%ld.%09ld] interrupt #%ld, %ld wraps, offset %fs %f/%f/%f\n", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
+		printf("%ld.%09ld] interrupt #%ld, %ld wraps (%.2f%%), offset %fs %f/%f/%f\n", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count, wrap_count * 100. / total_count, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
 	}
 }
 
@@ -295,7 +295,6 @@ void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, cons
 		if (edge_both)
 		{
 			value = get_value(pps_in_line);
-
 			if (value == 0)
 				continue;
 		}
