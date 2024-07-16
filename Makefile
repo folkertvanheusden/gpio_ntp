@@ -1,10 +1,10 @@
-VERSION=1.5
+VERSION=2.0
 
 DEBUG= -g
-CFLAGS+=-DVERSION=\"${VERSION}\" $(DEBUG) -muclibc
-LDFLAGS+=$(DEBUG) -lm -lrt #-muclibc -static
+CFLAGS+=-DVERSION=\"${VERSION}\" $(DEBUG)
+LDFLAGS+=$(DEBUG) -lgpiod -lm -lrt
 
-OBJS=error.o gpio-int-test.o main.o
+OBJS=error.o main.o
 
 all: rpi_gpio_ntp
 

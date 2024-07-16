@@ -2,8 +2,10 @@ rpi_gpio_ntp
 ------------
 Written by Folkert van Heusden (folkert@vanheusden.com).
 Released under GPLv2.
-Feel free to send me an e-mail if you have any questions (but first fully read this manual!).
 
+installation
+------------
+Make sure you have libgpiod-dev installed.
 
 usage
 -----
@@ -84,9 +86,3 @@ The "FIX" is the important one: if it is not there, then there won't be a useful
 You can also run:
 	gpsmon
 This will show an "HDOP" value (right window). The lower this value is, the better. See e.g. http://en.wikipedia.org/wiki/Dilution_of_precision_(GPS) for an explanation of this value and a table showing what value means what rating. A value less than 5 should be good enough. At home, I get a value of 0.84(!).
-
-
-note
-----
-This program is based on gpio-int-test.c written by Ridgerun.
-I retrieved it from: https://www.ridgerun.com/developer/wiki/index.php/Gpio-int-test.c

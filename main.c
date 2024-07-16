@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <gpiod.h>
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
@@ -14,7 +15,6 @@
 #include <sys/types.h>
 
 #include "error.h"
-#include "gpio-int-test.h"
 
 #ifdef __GNUG__
 	#define likely(x)       __builtin_expect((x), 1)
@@ -26,6 +26,8 @@
 
 #define NTP_KEY	1314148400
 #define DEFAULT_FUDGE_FACTOR 0.0
+
+#define CONSUMER "Consumer"
 
 #define BILLION 1000000000
 
@@ -159,26 +161,22 @@ void set_prio(void)
 		error_exit("sched_setscheduler() failed");
 }
 
-int get_value(const int fd)
+int get_value(struct gpiod_line *const line)
 {
-	static char c[32];
+	int rc = gpiod_line_get_value(line);
+	if (rc == -1)
+		error_exit("gpiod_line_get_value failed");
 
-	if (read(fd, c, sizeof c) == -1)
-		error_exit("read failed");
-
-	if (lseek(fd, 0, SEEK_SET) == -1)
-		error_exit("select failed");
-
-	return c[0];
+	return rc;
 }
 
-void wait_for_state(const int fd, const int what)
+void wait_for_state(struct gpiod_line *const line, const int what)
 {
 	int value = 0;
 
 	do
 	{
-		value = get_value(fd);
+		value = get_value(line);
 	}
 	while(value != what);
 }
@@ -226,40 +224,42 @@ void debug_log(const struct timespec *const ts, const long int wrap_count)
 	}
 }
 
-void pulse_pin(const int pin, int *const memory)
+void pulse_pin(struct gpiod_line *const pin, int *const memory)
 {
-	if (pin != -1)
+	if (pin)
 	{
-		gpio_set_value(pin, *memory);
+		if (gpiod_line_set_value(pin, *memory) == -1)
+			error_exit("gpiod_line_set_value failed");
 
 		*memory = !*memory;
 	}
 }
 
-void polling_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, const int gpio_pps_in_fd, const int gpio_pps_out_pin, const double idle_factor, int rebase)
+void polling_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, struct gpiod_line *const pps_in_line, struct gpiod_line *const pps_out_line, const double idle_factor, int rebase)
 {
 	long int wrap_count = 0;
 	struct timespec ts = { 0, 0 };
 	char first = 1;
 	int pulse_out_value = 0;
 
+	if (gpiod_line_request_input(pps_in_line, CONSUMER) == -1)
+		error_exit("gpiod_line_request_input failed");
+
 	for(;;)
 	{
 		// wait for high
-		wait_for_state(gpio_pps_in_fd, '1');
+		wait_for_state(pps_in_line, 1);
 
 		if (unlikely(clock_gettime(CLOCK_REALTIME, &ts) == -1))
 			error_exit("clock_gettime(CLOCK_REALTIME) failed");
 
-		pulse_pin(gpio_pps_out_pin, &pulse_out_value);
+		pulse_pin(pps_out_line, &pulse_out_value);
 
 		// register offset at ntp
 		if (unlikely(first))
 			first = 0;
 		else
-		{
 			notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase);
-		}
 
 		debug_log(&ts, wrap_count);
 
@@ -267,52 +267,44 @@ void polling_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, const 
 	}
 }
 
-void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, const char edge_both, const int gpio_pps_in_fd, const int gpio_pps_out_pin, const int rebase)
+void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, const char edge_both, struct gpiod_line *const pps_in_line, struct gpiod_line *const pps_out_line, const int rebase)
 {
-	struct timespec ts = { 0, 0 };
 	char dummy = 0;
 	int value = 0, gpio_pps_out_pin_value = 0;
-	struct pollfd fdset[1];
-	char buffer[64];
 	long int wrap_count = 0;
+
+	if (edge_both) {
+		if (gpiod_line_request_both_edges_events(pps_in_line, CONSUMER) == -1)
+			error_exit("gpiod_line_request_both_edges_events failed");
+	}
+	else {
+		if (gpiod_line_request_rising_edge_events(pps_in_line, CONSUMER) == -1)
+			error_exit("gpiod_line_request_rising_edge_events failed");
+	}
 
 	for(;;)
 	{
-		lseek(gpio_pps_in_fd, 0, SEEK_SET);
+		struct gpiod_line_event event = { 0 };
+		int rc = gpiod_line_event_wait(pps_in_line, NULL);
+		if (rc == -1)
+			error_exit("gpiod_line_event_wait failed");
 
-		/* clean-up interrupt flag */
-		/* FIXME do using nonblocking fd to prevent blocks when bug(?) in gpio implementation */
-		read(gpio_pps_in_fd, &dummy, 1);
+		if (gpiod_line_event_read(pps_in_line, &event) == -1)
+			error_exit("gpiod_line_event_read failed");
 
-		fdset[0].fd = gpio_pps_in_fd;
-		fdset[0].events = POLLPRI;
-		fdset[0].revents = 0;
-
-		if (poll(fdset, 1, -1) <= 0)
-			error_exit("poll() failed");
-
-		if (likely(fdset[0].revents & POLLPRI))
+		if (edge_both)
 		{
-			/* see what time the local system thinks it is, ASAP */
-			if (unlikely(clock_gettime(CLOCK_REALTIME, &ts) == -1))
-				error_exit("clock_gettime(CLOCK_REALTIME) failed");
+			value = get_value(pps_in_line);
 
-			if (edge_both)
-			{
-				value = get_value(gpio_pps_in_fd);
-
-				if (value == '0')
-					continue;
-			}
-
-			notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase);
-
-			pulse_pin(gpio_pps_out_pin, &gpio_pps_out_pin_value);
-
-			(void)read(fdset[0].fd, buffer, sizeof buffer);
-
-			debug_log(&ts, wrap_count);
+			if (value == 0)
+				continue;
 		}
+
+		notify_ntp(pst, &fudge_s, &fudge_ns, &event.ts, &wrap_count, rebase);
+
+		pulse_pin(pps_out_line, &gpio_pps_out_pin_value);
+
+		debug_log(&event.ts, wrap_count);
 	}
 }
 
@@ -326,7 +318,7 @@ void help(void)
 {
 	fprintf(stderr, "-N x    x must be 0...3, it is the NTP shared memory unit number\n");
 	fprintf(stderr, "-g x    gpio pin to listen on\n");
-	fprintf(stderr, "-G x    explicit path to the gpio-pin-path, for special cases like the cubieboard1 (/sys.../gpio1_pg9 instead of /sys.../gpio1). Note: you need to \"export\" and configure the pin in this use-case by hand.\n");
+	fprintf(stderr, "-G x    name of the GPIOchip (default: gpiochip0)\n");
 	fprintf(stderr, "-d      debug mode\n");
 	fprintf(stderr, "-F x    fudge factor (in microseconds)\n");
 	fprintf(stderr, "-p x    when enabled, toggle GPIO pin x so that you can measure delays using a scope\n");
@@ -343,15 +335,17 @@ int main(int argc, char *argv[])
 	int fudge_s = 0, fudge_ns = 0;
 	int unit = 0; /* 0...3 */
 	int gpio_pps_in_pin = -1, gpio_pps_out_pin = -1;
-	const char *gpio_pps_in_pin_path = NULL;
-	int gpio_pps_in_fd = -1;
+	const char *gpio_chip = "gpiochip0";
 	char do_fork = 1, gpio_pps_out_pin_value = 1;
 	int c = -1;
 	char edge_both = 0, polling = 0;
 	double idle_factor = 0.95;
 	int rebase = -1;
+	struct gpiod_chip *chip = NULL;
+	struct gpiod_line *pps_in_line = NULL;
+	struct gpiod_line *pps_out_line = NULL;
 
-	printf("rpi_gpio_ntp v" VERSION ", (C) 2013-2015 by folkert@vanheusden.com\n\n");
+	printf("rpi_gpio_ntp v" VERSION ", (C) 2013-2024 by folkert@vanheusden.com\n\n");
 
 	while((c = getopt(argc, argv, "R:G:i:bp:fN:g:F:dPh")) != -1)
 	{
@@ -359,10 +353,6 @@ int main(int argc, char *argv[])
 		{
 			case 'R':
 				rebase = atoi(optarg);
-				break;
-
-			case 'G':
-				gpio_pps_in_pin_path = optarg;
 				break;
 
 			case 'P':
@@ -375,6 +365,10 @@ int main(int argc, char *argv[])
 
 			case 'b':
 				edge_both = 1;
+				break;
+
+			case 'G':
+				gpio_chip = optarg;
 				break;
 
 			case 'p':
@@ -411,24 +405,27 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (gpio_pps_in_pin == -1 && gpio_pps_in_pin_path == NULL)
+	if (gpio_pps_in_pin == -1)
 		error_exit("You need to select a GPIO pin to \"listen\" on.");
 
-	if (gpio_pps_out_pin == gpio_pps_in_pin && gpio_pps_in_pin_path == NULL)
+	if (gpio_pps_out_pin == gpio_pps_in_pin)
 		error_exit("You can't use the same pin for both in- and output.");
+
+	chip = gpiod_chip_open_by_name(gpio_chip);
+	if (!chip)
+		error_exit("Open chip failed");
+
+	pps_in_line = gpiod_chip_get_line(chip, gpio_pps_in_pin);
+	if (!pps_in_line)
+		error_exit("Get input line failed");
 
 	if (debug)
 	{
 		printf("NTP unit : %d\n", unit);
-		if (gpio_pps_in_pin_path)
-			printf("GPIO pin : %s\n", gpio_pps_in_pin_path);
-		else
-			printf("GPIO pin : %d\n", gpio_pps_in_pin);
-		printf("GPIO pout: %d\n", gpio_pps_out_pin);
 		printf("Fudge    : %d.%09d\n", fudge_s, fudge_ns);
 
 		if (polling)
-			printf("Polling mode(!)\n");
+			printf("Polling mode\n");
 
 		if (do_fork)
 		{
@@ -443,63 +440,27 @@ int main(int argc, char *argv[])
 	/* connect to ntp */
 	pst = get_shm_pointer(unit);
 
-	if (gpio_pps_in_pin_path == NULL)
-	{
-		/* setup gpio */
-		gpio_export(gpio_pps_in_pin);
-		gpio_set_dir(gpio_pps_in_pin, 0);
-
-		int rc = 0;
-		if (edge_both)
-			rc = gpio_set_edge(gpio_pps_in_pin, "both\n");
-		else
-			rc = gpio_set_edge(gpio_pps_in_pin, "rising\n");
-
-		if (rc == -1)
-			fprintf(stderr, "Failed to set direction: on the gl-inet this is normally. On other platforms this may be a problem. Continuing(!)\n");
-	}
-
 	if (gpio_pps_out_pin != -1)
 	{
-		gpio_export(gpio_pps_out_pin);
-		gpio_set_dir(gpio_pps_out_pin, 1);
+		pps_out_line = gpiod_chip_get_line(chip, gpio_pps_out_pin);
+		if (!pps_out_line)
+			error_exit("Get output line failed");
+
+		if (gpiod_line_request_output(pps_out_line, CONSUMER, 0) == -1)
+			error_exit("gpiod_line_request_output failed");
 	}
 
 	set_nice();
 
 	set_prio();
 
-	if (gpio_pps_in_pin_path)
-	{
-		int len = strlen(gpio_pps_in_pin_path);
-
-		if (len < 6 || strcmp(&gpio_pps_in_pin_path[len - 6], "/value") != 0)
-		{
-			char *buffer = NULL;
-			asprintf(&buffer, "%s/value", gpio_pps_in_pin_path);
-			gpio_pps_in_fd = open(buffer, O_RDWR);
-			free(buffer);
-		}
-		else
-		{
-			gpio_pps_in_fd = open(gpio_pps_in_pin_path, O_RDWR);
-		}
-
-		if (gpio_pps_in_fd == -1)
-			error_exit("Failed opening GPIO in-pin. Make sure you use the complete path to the \"value\"-file, e.g.: /sys/class/gpio/gpio1_pg9/value\n");
-	}
-	else
-	{
-		gpio_pps_in_fd = gpio_fd_open(gpio_pps_in_pin);
-	}
-
 	if (do_fork && daemon(0, 0) == -1)
 		error_exit("daemon() failed");
 
 	if (polling)
-		polling_driven(pst, fudge_s, fudge_ns, gpio_pps_in_fd, gpio_pps_out_pin, idle_factor, rebase);
+		polling_driven(pst, fudge_s, fudge_ns, pps_in_line, pps_out_line, idle_factor, rebase);
 	else
-		interrupt_driven(pst, fudge_s, fudge_ns, edge_both, gpio_pps_in_fd, gpio_pps_out_pin, rebase);
+		interrupt_driven(pst, fudge_s, fudge_ns, edge_both, pps_in_line, pps_out_line, rebase);
 
 	return 0;
 }
