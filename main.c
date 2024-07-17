@@ -56,7 +56,9 @@ struct shmTime {
 	int    precision;
 	int    nsamples;
 	volatile int valid;
-	int    dummy[10]; 
+	int    clockTimeStampNSec;
+	int    receiveTimeStampNSec;
+	int    dummy[8];
 };
 
 int write_pidfile(const char *const fname)
@@ -130,6 +132,7 @@ void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct t
 		 */
 		pst -> receiveTimeStampSec = ts -> tv_sec;
 		pst -> receiveTimeStampUSec = ts -> tv_nsec / 1000;
+		pst -> receiveTimeStampNSec = ts -> tv_nsec;
 
 		if (ts -> tv_nsec >= BILLION / 2)
 		{
@@ -139,6 +142,7 @@ void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct t
 
 		pst -> clockTimeStampSec = ts -> tv_sec;
 		pst -> clockTimeStampUSec = 0;
+		pst -> clockTimeStampNSec = 0;
 
 		pst -> leap = pst -> mode = pst -> count = /* */
 		pst -> precision = 0;	/* 0 = precision of 1 sec., -1 = 0.5s */
