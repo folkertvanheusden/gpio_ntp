@@ -55,7 +55,7 @@ struct shmTime {
 	int    leap;
 	int    precision;
 	int    nsamples;
-	int    valid;
+	volatile int valid;
 	int    dummy[10]; 
 };
 
@@ -89,8 +89,10 @@ struct shmTime * get_shm_pointer(const int unitNr)
 	return pst;
 }
 
-void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct timespec *const ts, long int *wrap, const int rebase)
+void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct timespec *const ts, long int *wrap, const int rebase, long int *retrieved)
 {
+	(*retrieved) += pst -> valid == 0;
+
 	pst -> valid = 0;
 
 	static int rebase_count = 0;
@@ -192,7 +194,7 @@ void sleep_for_offset(const double idle_factor)
 	usleep((long)((double)next_int * idle_factor) / 1000);
 }
 
-void debug_log(const struct timespec *const ts, const long int wrap_count)
+void debug_log(const struct timespec *const ts, const long int wrap_count, const long int retrieved)
 {
 	static long int total_count = 0, min_count = 0, max_count = 0;
 	static double min_avg = 0, avg_avg = 0, max_avg = 0;
@@ -220,7 +222,7 @@ void debug_log(const struct timespec *const ts, const long int wrap_count)
 		avg_avg += offset;
 		total_count++;
 
-		printf("%ld.%09ld] interrupt #%ld, %ld wraps (%.2f%%), offset %fs %f/%f/%f\n", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count, wrap_count * 100. / total_count, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
+		printf("%ld.%09ld] interrupt #%ld, %.2f%% wraps, %ld retrieved, offset %fs %f/%f/%f\n", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count * 100. / total_count, retrieved, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
 	}
 }
 
@@ -238,6 +240,7 @@ void pulse_pin(struct gpiod_line *const pin, int *const memory)
 void polling_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, struct gpiod_line *const pps_in_line, struct gpiod_line *const pps_out_line, const double idle_factor, int rebase)
 {
 	long int wrap_count = 0;
+	long int retrieved = 0;
 	struct timespec ts = { 0, 0 };
 	char first = 1;
 	int pulse_out_value = 0;
@@ -259,9 +262,9 @@ void polling_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, struct
 		if (unlikely(first))
 			first = 0;
 		else
-			notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase);
+			notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase, &retrieved);
 
-		debug_log(&ts, wrap_count);
+		debug_log(&ts, wrap_count, retrieved);
 
 		sleep_for_offset(idle_factor);
 	}
@@ -271,6 +274,7 @@ void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, cons
 {
 	char dummy = 0;
 	int value = 0, gpio_pps_out_pin_value = 0;
+	long int retrieved = 0;
 	long int wrap_count = 0;
 
 	if (edge_both) {
@@ -299,11 +303,11 @@ void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, cons
 				continue;
 		}
 
-		notify_ntp(pst, &fudge_s, &fudge_ns, &event.ts, &wrap_count, rebase);
+		notify_ntp(pst, &fudge_s, &fudge_ns, &event.ts, &wrap_count, rebase, &retrieved);
 
 		pulse_pin(pps_out_line, &gpio_pps_out_pin_value);
 
-		debug_log(&event.ts, wrap_count);
+		debug_log(&event.ts, wrap_count, retrieved);
 	}
 }
 
