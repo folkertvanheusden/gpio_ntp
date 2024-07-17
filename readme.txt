@@ -13,6 +13,8 @@ In this example I connected an Adafruit GPS rx/tx to the uart on the GPIO pins a
 See http://learn.adafruit.com/adafruit-ultimate-gps-on-the-raspberry-pi/using-uart-instead-of-usb for connection details.
 See http://jeffskinnerbox.files.wordpress.com/2012/11/raspberry-pi-rev-1-gpio-pin-out1.jpg for a list of the physical pins and what GPIO pin they correspond to.
 
+Note that it also works with e.g. https://www.leobodnar.com/shop/index.php?main_page=product_info&cPath=107&products_id=301
+
 First, install gpsd:
 	sudo apt-get install gpsd gpsd-clients
 then configure it to listen on on the correct device. For that, edit /etc/default/gpsd:
