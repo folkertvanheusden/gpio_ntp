@@ -116,9 +116,9 @@ void emit_time_delta(const double o_in)
 	else if (o_abs >= 0.001)
 		printf("%.3f ms", o_abs * 1000);
 	else if (o_abs >= 0.000001)
-		printf("%.3f us", o_abs * 10000000l);
+		printf("%.3f us", o_abs * 1000000l);
 	else if (o_abs >= 0.000000001)
-		printf("%.3f ns", o_abs * 10000000000l);
+		printf("%.3f ns", o_abs * 1000000000l);
 	else
 		printf("%e s", o_abs);
 }
