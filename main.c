@@ -321,8 +321,15 @@ void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, cons
 
 	for(;;)
 	{
+		struct timespec ts = { 0 };
 		struct gpiod_line_event event = { 0 };
 		int rc = gpiod_line_event_wait(pps_in_line, NULL);
+
+		/* cannot use the time from gpiod_line_event_read as that is the
+		 * CLOCK_MONOTIC timesource, based at boottime */
+		if (unlikely(clock_gettime(CLOCK_REALTIME, &ts) == -1))
+			error_exit("clock_gettime(CLOCK_REALTIME) failed");
+
 		if (rc == -1)
 			error_exit("gpiod_line_event_wait failed");
 
@@ -336,11 +343,11 @@ void interrupt_driven(struct shmTime *const pst, int fudge_s, int fudge_ns, cons
 				continue;
 		}
 
-		notify_ntp(pst, &fudge_s, &fudge_ns, &event.ts, &wrap_count, rebase, &retrieved);
+		notify_ntp(pst, &fudge_s, &fudge_ns, &ts, &wrap_count, rebase, &retrieved);
 
 		pulse_pin(pps_out_line, &gpio_pps_out_pin_value);
 
-		debug_log(&event.ts, wrap_count, retrieved);
+		debug_log(&ts, wrap_count, retrieved);
 	}
 }
 
