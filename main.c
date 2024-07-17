@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <gpiod.h>
+#include <math.h>
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
@@ -36,6 +37,8 @@
 #define TRUE 1
 
 char debug = 0;
+
+char print_as_is = 0;
 
 struct shmTime {
 	int    mode; /* 0 - if valid set
@@ -89,6 +92,35 @@ struct shmTime * get_shm_pointer(const int unitNr)
 	pst = (struct shmTime *)addr;
 
 	return pst;
+}
+
+void emit_time_delta(const double o_in)
+{
+	double o_abs = fabs(o_in);
+
+	if (isnan(o_in)) {
+		printf("?");
+		return;
+	}
+
+	if (print_as_is) {
+		printf("%f", o_in);
+		return;
+	}
+
+	if (o_in < 0)
+		printf("-");
+
+	if (o_abs >= 1.)
+		printf("%.3f s", o_abs);
+	else if (o_abs >= 0.001)
+		printf("%.3f ms", o_abs * 1000);
+	else if (o_abs >= 0.000001)
+		printf("%.3f us", o_abs * 10000000l);
+	else if (o_abs >= 0.000000001)
+		printf("%.3f ns", o_abs * 10000000000l);
+	else
+		printf("%es", o_abs);
 }
 
 void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct timespec *const ts, long int *wrap, const int rebase, long int *retrieved)
@@ -241,7 +273,16 @@ void debug_log(const struct timespec *const ts, const long int wrap_count, const
 		avg_avg += offset;
 		total_count++;
 
-		printf("%ld.%09ld] interrupt #%ld, %.2f%% wraps, %ld retrieved, offset %fs %f/%f/%f/", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count * 100. / total_count, retrieved, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
+		printf("%ld.%09ld] interrupt #%ld, %.2f%% wraps, %ld retrieved, offset ", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count * 100. / total_count, retrieved);
+
+		emit_time_delta(offset);
+		printf(" ");
+		emit_time_delta(min_avg/(double)min_count);
+		printf("/");
+		emit_time_delta(avg_avg/(double)total_count);
+		printf("/");
+		emit_time_delta(max_avg/(double)max_count);
+		printf("/");
 
 		if (n_offsets_in >= 60) {
 			double median = -1;
@@ -251,11 +292,12 @@ void debug_log(const struct timespec *const ts, const long int wrap_count, const
 
 			median = (work_offsets[29] + work_offsets[30]) / 2.;
 
-			printf("%f\n", median);
+			emit_time_delta(median);
 		}
 		else {
-			printf("-\n");
+			printf("?");
 		}
+		printf("\n");
 	}
 }
 
@@ -370,6 +412,7 @@ void help(void)
 	fprintf(stderr, "-P      use polling - for when the device does not support interrupts on gpio state changes\n");
 	fprintf(stderr, "-i x    polling: how long shall we sleep (part of a second) and not poll for interrupts. e.g. 0.95\n");
 	fprintf(stderr, "-R x    re-base: measure 'x' times the offset, then take the average and then use that as an offset. this can be useful when using e.g. a tcxo or an other non-synced pulse-source\n");
+	fprintf(stderr, "-v      show values \"as-is\"\n");
 }
 
 int main(int argc, char *argv[])
@@ -390,7 +433,7 @@ int main(int argc, char *argv[])
 
 	printf("rpi_gpio_ntp v" VERSION ", (C) 2013-2024 by folkert@vanheusden.com\n\n");
 
-	while((c = getopt(argc, argv, "R:G:i:bp:fN:g:F:dPh")) != -1)
+	while((c = getopt(argc, argv, "R:G:i:bp:fN:g:F:dPvh")) != -1)
 	{
 		switch(c)
 		{
@@ -437,6 +480,10 @@ int main(int argc, char *argv[])
 
 			case 'd':
 				debug = 1;
+				break;
+
+			case 'v':
+				print_as_is = 1;
 				break;
 
 			case 'h':
