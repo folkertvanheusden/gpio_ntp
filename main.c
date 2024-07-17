@@ -194,14 +194,29 @@ void sleep_for_offset(const double idle_factor)
 	usleep((long)((double)next_int * idle_factor) / 1000);
 }
 
+int compare_func_double(const void *a, const void *b)
+{
+	double ad = *(double *)a;
+	double bd = *(double *)b;
+
+	return ad - bd;
+}
+
 void debug_log(const struct timespec *const ts, const long int wrap_count, const long int retrieved)
 {
 	static long int total_count = 0, min_count = 0, max_count = 0;
 	static double min_avg = 0, avg_avg = 0, max_avg = 0;
+	static double offsets[60] = { 0 };
+	static int n_offsets_in = 0;
 
 	if (debug)
 	{
 		double offset = (double)((ts -> tv_nsec >= BILLION / 2) ? -(BILLION - ts -> tv_nsec) : ts -> tv_nsec) / (double)BILLION; 
+
+		memmove(&offsets[0], &offsets[1], sizeof(double) * 59);
+		offsets[59] = offset;
+		if (n_offsets_in < 60)
+			n_offsets_in++;
 
 		if (total_count)
 		{
@@ -222,7 +237,21 @@ void debug_log(const struct timespec *const ts, const long int wrap_count, const
 		avg_avg += offset;
 		total_count++;
 
-		printf("%ld.%09ld] interrupt #%ld, %.2f%% wraps, %ld retrieved, offset %fs %f/%f/%f\n", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count * 100. / total_count, retrieved, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
+		printf("%ld.%09ld] interrupt #%ld, %.2f%% wraps, %ld retrieved, offset %fs %f/%f/%f/", ts -> tv_sec, ts -> tv_nsec, total_count, wrap_count * 100. / total_count, retrieved, offset, min_avg/(double)min_count, avg_avg/(double)total_count, max_avg/(double)max_count);
+
+		if (n_offsets_in >= 60) {
+			double median = -1;
+			double work_offsets[60] = { 0 };
+			memcpy(work_offsets, offsets, sizeof offsets);
+			qsort(work_offsets, 60, sizeof(double), compare_func_double);
+
+			median = (work_offsets[29] + work_offsets[30]) / 2.;
+
+			printf("%f\n", median);
+		}
+		else {
+			printf("-\n");
+		}
 	}
 }
 
