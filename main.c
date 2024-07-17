@@ -120,7 +120,7 @@ void emit_time_delta(const double o_in)
 	else if (o_abs >= 0.000000001)
 		printf("%.3f ns", o_abs * 10000000000l);
 	else
-		printf("%es", o_abs);
+		printf("%e s", o_abs);
 }
 
 void notify_ntp(struct shmTime *const pst, int *fudge_s, int *fudge_ns, struct timespec *const ts, long int *wrap, const int rebase, long int *retrieved)
